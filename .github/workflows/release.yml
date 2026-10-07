@@ -1,8 +1,8 @@
 name: Release
 
-# Builds the macOS disk image (one universal app for Intel and Apple silicon) and publishes it as a GitHub release.
-# Runs on every change here and on every change to app-core (app-core sends
-# "core-updated").
+# Builds Reevun for macOS (one app for Apple silicon and Intel) into
+# Reevun.dmg and publishes it as a GitHub release. Runs on every change here
+# and on every change to app-core (app-core sends "core-updated").
 on:
   push:
     branches: [main]
@@ -19,7 +19,7 @@ permissions:
 
 jobs:
   release:
-    runs-on: macos-latest
+    runs-on: macos-15
     env:
       VERSION: 1.0.${{ github.run_number }}
     steps:
@@ -34,20 +34,46 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 22
-      - name: Version
+      # The app's own screens, one self-contained page built into the app.
+      - name: Screens
+        run: |
+          npm --prefix app-core ci
+          npm --prefix app-core run build
+          cp app-core/dist/index.html macos-app/Resources/screens.html
+      - name: Project
         working-directory: macos-app
-        run: npm version "${{ env.VERSION }}" --no-git-tag-version
-      - name: Install
-        working-directory: macos-app
-        run: npm ci
+        run: |
+          brew install xcodegen
+          sed -i '' "s/MARKETING_VERSION: .*/MARKETING_VERSION: $VERSION/; s/CURRENT_PROJECT_VERSION: .*/CURRENT_PROJECT_VERSION: ${{ github.run_number }}/" project.yml
+          xcodegen generate
       - name: Build
         working-directory: macos-app
-        run: npm run dist
-      # Always Reevun.dmg, so .../releases/latest/download/Reevun.dmg is a permanent download link.
+        run: >
+          xcodebuild -project Reevun.xcodeproj -scheme Reevun -configuration Release
+          -destination "generic/platform=macOS" -derivedDataPath build
+          ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO build
+      # Started once to check it opens; the screen after a while goes into
+      # the log (a small JPEG, base64) to look at.
+      - name: Start
+        working-directory: macos-app
+        run: |
+          open build/Build/Products/Release/Reevun.app
+          sleep 20
+          screencapture -x screen.png
+          sips -Z 1000 -s format jpeg -s formatOptions 60 screen.png --out screen.jpg >/dev/null
+          echo "SCREEN-BEGIN"; base64 -b 1000 -i screen.jpg; echo "SCREEN-END"
+          osascript -e 'quit app "Reevun"'
+      - name: Disk image
+        working-directory: macos-app
+        run: |
+          mkdir dmg
+          cp -R build/Build/Products/Release/Reevun.app dmg/
+          ln -s /Applications dmg/Applications
+          hdiutil create -volname Reevun -srcfolder dmg -format UDZO -o Reevun.dmg
+      # Always Reevun.dmg, so .../releases/latest/download/Reevun.dmg is a
+      # permanent download link.
       - name: Publish
         working-directory: macos-app
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >
-          gh release create "v${{ env.VERSION }}" --title "Reevun ${{ env.VERSION }}" --notes "" --latest
-          release/Reevun.dmg
+        run: gh release create "v$VERSION" --title "Reevun $VERSION" --notes "" --latest Reevun.dmg
